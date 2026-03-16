@@ -1,1 +1,404 @@
 
+*&---------------------------------------------------------------------*
+*& Report Z_FAILED_SUBSRCIPTIONS
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+report z_failed_subscriptions.
+
+tables: zssb_subs, zinsusale, zupdt_bp_token.
+
+parameters: p_test as checkbox default 'X'.
+
+
+selection-screen skip 1.
+parameters: p_reset  radiobutton group rad1.
+parameters: p_addtok radiobutton group rad1.
+selection-screen skip 1.
+parameters: p_chg    radiobutton group rad2.
+parameters: p_all    radiobutton group rad2.
+
+selection-screen skip 1.
+
+select-options: s_erdat for zinsusale-regdato obligatory.
+select-options: s_polnr for zinsusale-polisenr.
+
+types: begin of lty_output,
+         source(10),
+         polisenr    like zinsusale-polisenr,
+         refnr       like zinsusale-refnr,
+         indno       like zinsusale-indno,
+         created     like zinsusale-dato,
+         zzssbstatus like zinsusale-zzssbstatus,
+         butikk      like zinsusale-butikk,
+         partner     like zinsusale-partner,
+         zzbpref     like zssb_subs-zzbpref,
+         vkorg       type vkorg,
+         matnr       type matnr,
+         name        like zinsusale-name,
+         adr         like zinsusale-adr,
+         postno      like zinsusale-postno,
+         city        like zinsusale-city,
+         message(40),
+
+       end   of lty_output.
+
+
+data: lt_output type table of lty_output.
+data: ls_output type          lty_output.
+
+data: lt_zinsusale type table of zinsusale.
+data: lt_zssb_subs type table of zssb_subs.
+
+field-symbols: <fs_subs> type zssb_subs.
+
+data: lt_bp_token       type table of zupdt_bp_token.
+data: lt_bp_token_blank type table of zupdt_bp_token.
+data: lt_bp_fake_token  type table of zupdt_bp_token.
+
+data: lv_next_token    like zupdt_bp_token-token.
+data: ls_bp_token      type zupdt_bp_token.
+data: lv_new_token(5)  type n.
+data: lv_string_guid   type string.
+data: lv_tabix         like sy-tabix.
+
+start-of-selection.
+
+  perform get_data.
+
+  if p_reset gt space.
+    perform reset.
+  else.
+    perform fake_token.
+  endif.
+
+  perform display.
+
+end-of-selection.
+
+
+
+form get_data.
+
+*  ranges: r_zztoken for zinsusale-zztoken.
+*
+*  if p_addtok gt space.
+*
+*     r_zztoken-sign   = 'I'.
+*     r_zztoken-option = 'EQ'.
+*     r_zztoken-low    = ' '.
+*
+*  endif.
+
+  if p_reset gt space.
+    select * into table lt_zinsusale
+    from   zinsusale
+    where  zzssbstatus eq '3'
+    and    regdato     in s_erdat
+    and    polisenr    in s_polnr.
+
+    select * into table lt_zssb_subs
+    from   zssb_subs
+    where  zssbstatus    eq '3'
+    and    polisenr      in s_polnr
+    and    creation_date in s_erdat.
+  else.
+    select * into table lt_zinsusale
+    from   zinsusale
+    where  zzssbstatus eq '3'
+    and    regdato     in s_erdat
+    and    polisenr    in s_polnr
+    and    zztoken     eq space.
+
+    select * into table lt_zssb_subs
+    from   zssb_subs
+    where  zssbstatus    eq '3'
+    and    creation_date in s_erdat
+    and    polisenr      in s_polnr
+    and    zztoken       eq space.
+  endif.
+
+
+  select * into table lt_bp_token
+  from   zupdt_bp_token.
+
+  loop at lt_bp_token ASSIGNING FIELD-SYMBOL(<fs_tb>) where polisenr eq space.
+
+    append <fs_tb> to lt_bp_token_blank.
+  endloop.
+
+  loop at lt_bp_token assigning field-symbol(<fs_t>) where token+0(11) eq 'FAKET0K3NFH'.
+
+    append <fs_t> to lt_bp_fake_token.
+  endloop.
+
+  loop at lt_zinsusale assigning field-symbol(<fs_zi>).
+
+
+    move-corresponding <fs_zi> to ls_output.
+    ls_output-created = <fs_zi>-regdato.
+    ls_output-source = 'ZINSUSALE'.
+    append ls_output to lt_output.
+  endloop.
+
+  clear ls_output.
+
+  loop at lt_zssb_subs assigning field-symbol(<fs_s>).
+
+    move-corresponding <fs_s> to ls_output.
+
+    concatenate <fs_s>-name1 <fs_s>-name2 into ls_output-name separated by space.
+    ls_output-created     = <fs_s>-creation_date.
+    ls_output-zzssbstatus = <fs_s>-zssbstatus.
+    ls_output-source      = 'ZSSB_SUBS'.
+    append ls_output to lt_output.
+  endloop.
+
+endform.
+
+
+
+form reset.
+
+  loop at lt_output into ls_output.
+
+    lv_tabix = sy-tabix.
+
+    read table lt_bp_token into ls_bp_token with key polisenr = ls_output-polisenr.
+    if sy-subrc eq 0.
+
+      ls_output-message = 'Sync request flag deleted'.
+      modify lt_output from ls_output index lv_tabix.
+
+      if p_test eq space.
+        update zupdt_bp_token
+        set bprequestsent = ' '
+        where partner_guid eq ls_bp_token-partner_guid
+        and   token        eq ls_bp_token-token
+        and   refnr        eq ls_bp_token-refnr.
+
+      endif.
+
+    endif.
+
+  endloop.
+
+endform.
+
+form fake_token.
+
+  perform get_next_token using lv_new_token.
+
+  loop at lt_output into ls_output where zzbpref gt space.
+
+    lv_tabix = sy-tabix.
+
+    read table lt_bp_token into ls_bp_token with key polisenr = ls_output-polisenr.
+    if sy-subrc ne 0.
+
+       read table lt_bp_token_blank into ls_bp_token with key refnr = ls_output-refnr.
+
+       if sy-subrc ne 0.
+          perform insert_new_token using lv_tabix.
+       endif.
+*      concatenate 'FAKET0K3NFH' lv_new_token into ls_bp_token-token.
+*
+*      lv_new_token = lv_new_token + 1.
+*
+**     ls_bp_token-partner_guid = ls_output-zzbpref.
+*      lv_string_guid = ls_output-zzbpref.
+*      if lv_string_guid ca '-'.
+*        ls_bp_token-partner_guid = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( lv_string_guid ).
+*      else.
+*        ls_bp_token-partner_guid = ls_output-zzbpref.
+*      endif.
+*
+*      ls_bp_token-status       = 'BP_MISSING'.
+*      ls_bp_token-butikk       = ls_output-butikk.
+*      ls_bp_token-partner      = ls_output-partner.
+*      ls_bp_token-refnr        = ls_output-refnr.
+*      ls_bp_token-polisenr     = ls_output-polisenr.
+*      ls_bp_token-created_date = sy-datum.
+*      ls_bp_token-created_time = sy-uzeit.
+*
+*      concatenate 'Fake token' ls_bp_token-token into ls_output-message
+*      separated by space.
+*
+*      modify lt_output from ls_output index lv_tabix.
+*
+*      if p_test eq space.
+*        insert zupdt_bp_token from ls_bp_token.
+*      endif.
+
+    endif.
+  endloop.
+
+* Check if doc. no exist for records without policy no.
+*  loop at lt_output into ls_output where zzbpref gt space.
+*
+*    lv_tabix = sy-tabix.
+*
+*    read table lt_bp_token_blank into ls_bp_token with key refnr = ls_output-refnr.
+*    if sy-subrc ne 0.
+*
+*       perform insert_new_token using lv_tabix 'D'.
+*
+*    endif.
+*  endloop.
+endform.
+
+form insert_new_token using p_tabix. " p_type.
+
+  clear ls_bp_token.
+
+  concatenate 'FAKET0K3NFH' lv_new_token into ls_bp_token-token.
+
+  lv_new_token = lv_new_token + 1.
+
+  lv_string_guid = ls_output-zzbpref.
+  if lv_string_guid ca '-'.
+    ls_bp_token-partner_guid = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( lv_string_guid ).
+  else.
+    ls_bp_token-partner_guid = ls_output-zzbpref.
+  endif.
+
+  ls_bp_token-status       = 'BP_MISSING'.
+  ls_bp_token-butikk       = ls_output-butikk.
+  ls_bp_token-partner      = ls_output-partner.
+  ls_bp_token-refnr        = ls_output-refnr.
+  ls_bp_token-polisenr     = ls_output-polisenr.
+  ls_bp_token-created_date = sy-datum.
+  ls_bp_token-created_time = sy-uzeit.
+
+  concatenate 'Fake token' ls_bp_token-token into ls_output-message
+  separated by space.
+
+*  if p_type eq 'P'.
+*     concatenate 'Fake token (poiicy)' ls_bp_token-token into ls_output-message
+*     separated by space.
+*  else.
+*     concatenate 'Fake token (doc.no)' ls_bp_token-token into ls_output-message
+*     separated by space.
+*  endif.
+
+  modify lt_output from ls_output index p_tabix.
+
+  if p_test eq space.
+    insert zupdt_bp_token from ls_bp_token.
+  endif.
+endform.
+
+
+form get_next_token using p_next_token.
+
+  data: ls_token    type zupdt_bp_token.
+  data: lv_token(5) type n.
+
+* FAKET0K3NFH
+  if lines( lt_bp_fake_token ) gt 0.
+    sort lt_bp_fake_token by token descending.
+
+    read table lt_bp_fake_token into ls_token index 1.
+    lv_token = ls_token-token+11(5).
+    p_next_token = lv_token + 1.
+  else.
+    p_next_token = 'FAKET0K3NFH00001'.
+  endif.
+
+
+endform.
+
+form update.
+
+  check p_test eq space.
+
+  loop at lt_output into ls_output.
+
+
+  endloop.
+endform.
+
+form display.
+
+  data: lo_header  type ref to cl_salv_form_layout_grid,
+        lo_h_label type ref to cl_salv_form_label,
+        lo_h_flow  type ref to cl_salv_form_layout_flow.
+
+  data:   lv_header_text  type string.
+
+  data: salv_table   type ref to cl_salv_table,
+        salv_funct   type ref to cl_salv_functions,
+        salv_columns type ref to cl_salv_columns,
+        salv_column  type ref to cl_salv_column,
+        salv_layout  type ref to cl_salv_layout,
+        layout_key   type salv_s_layout_key.
+
+  if p_chg gt space.
+    delete lt_output where message eq space.
+  endif.
+
+  try .
+      call method cl_salv_table=>factory
+        importing
+          r_salv_table = salv_table
+        changing
+          t_table      = lt_output.
+    catch cx_salv_msg.
+  endtry.
+
+  create object lo_header.
+
+  if p_test eq space.
+    lv_header_text = 'Update run'.
+  else.
+    lv_header_text = 'Test run'.
+  endif.
+
+  lo_h_label = lo_header->create_label( row = 3 column = 1 ).
+  lo_h_label->set_text( lv_header_text ).
+
+  if p_reset gt space.
+    lv_header_text = 'Reset'.
+  else.
+    lv_header_text = 'Add fake token'.
+  endif.
+
+
+  lo_h_label = lo_header->create_label( row = 4 column = 1 ).
+  lo_h_label->set_text( lv_header_text ).
+
+  clear lv_header_text.
+  lo_h_label = lo_header->create_label( row = 5 column = 1 ).
+  lo_h_label->set_text( lv_header_text ).
+
+
+  salv_table->set_top_of_list( lo_header ).
+  salv_table->set_top_of_list_print( lo_header ).
+
+  salv_funct = salv_table->get_functions( ).
+  salv_funct->set_all( abap_true ).
+
+  salv_columns = salv_table->get_columns( ).
+  salv_columns->set_optimize( 'X' ).
+
+  salv_column ?= salv_columns->get_column( 'SOURCE' ).
+  salv_column->set_long_text( 'Source table' ).
+  salv_column->set_medium_text( 'Source table' ).
+  salv_column->set_short_text( 'Src. table' ).
+
+  salv_column ?= salv_columns->get_column( 'MESSAGE' ).
+  salv_column->set_long_text( 'Message' ).
+  salv_column->set_medium_text( 'Message' ).
+  salv_column->set_short_text( 'Message' ).
+
+* ENABLE SAVE LAYOUT BUTTON
+  salv_layout = salv_table->get_layout( ).
+  layout_key-report = sy-repid.
+  salv_layout->set_key( layout_key ).
+
+  salv_layout->set_save_restriction( if_salv_c_layout=>restrict_none ).
+  salv_layout->set_default( 'X' ).  " <== makes sure layout toolbar appears
+
+  salv_table->display( ).
+
+endform.
